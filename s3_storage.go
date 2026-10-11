@@ -72,6 +72,7 @@ func (x *S3Storage) Capabilities() []storage.StorageCapability {
 	return []storage.StorageCapability{
 		storage.CapabilityCAS,
 		storage.CapabilityReliableTime,
+		storage.CapabilityWatch,
 	}
 }
 
@@ -163,7 +164,10 @@ func (x *S3Storage) UpdateWithVersion(ctx context.Context, lockId string, except
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "NoSuchKey") || strings.Contains(errStr, "404") || strings.Contains(errStr, "does not exist") {
-			return storage_lock.ErrLockNotFound
+			// 记录不存在时必须返回 ErrVersionMiss 而不是 ErrLockNotFound：
+			// 核心层只把 ErrVersionMiss 当可重试（抢占路径），NotFound 是硬错误。
+			// 对齐 memory/etcd/zookeeper 已修口径。
+			return storage_lock.ErrVersionMiss
 		}
 		return err
 	}
@@ -175,7 +179,7 @@ func (x *S3Storage) UpdateWithVersion(ctx context.Context, lockId string, except
 	stat, err := obj.Stat()
 	if err != nil {
 		if strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "404") {
-			return storage_lock.ErrLockNotFound
+			return storage_lock.ErrVersionMiss
 		}
 		return err
 	}
@@ -314,4 +318,8 @@ func (x *S3Storage) List(ctx context.Context) (go_iterator.Iterator[*storage.Loc
 		slice = append(slice, lockInfo)
 	}
 	return go_iterator.FromSlice(slice), nil
+}
+
+func (x *S3Storage) Watch(ctx context.Context, lockId string) (<-chan *storage.LockInformation, error) {
+	return storage.NewPollingLockWatcher(x, 500*time.Millisecond).Watch(ctx, lockId)
 }
